@@ -246,9 +246,7 @@ class WateringControl:
             else:
                 self.pumpStates.append(True)  # Needs water
 
-        return self.pumpStates
-
-    def moistureChanged(self, i):
+        return self.pu def moistureChanged(self, i):
         if self.moisture[i] > (self.startPumpingMoisture[i] + self.waterDetectionThreshold):
             return True
         else:
