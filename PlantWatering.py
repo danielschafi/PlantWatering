@@ -2,7 +2,12 @@
 # !/usr/bin/python
 # -*- coding:utf-8 -*-
 
-
+import datetime
+from datetime import date
+import dash_bootstrap_components as dbc
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 from dash import Dash, html, dcc, Output, ctx
 from dash.dependencies import Input, Output, State
 import dash
@@ -16,6 +21,8 @@ from enum import Enum
 import sys
 import traceback
 import RPi.GPIO as GPIO
+from observable import Observable
+import csv
 
 WATERING_THRESHOLD = 40  # Threshold for pump activation
 RELAY_CHANNELS = [26, 20]  # ,21 Nr 3 unused
@@ -23,6 +30,7 @@ WAITING_TIME = [180, 180]
 WATERING_TIME = [2, 2]  #
 CHANGE_THRESHOLD_PRECENTAGE = 6
 current = [1, 1]
+WORKING_HOURS = [9, 17]  # start,end
 
 
 def main():
@@ -46,7 +54,7 @@ def main():
                          wateringTime=WATERING_TIME,
                          waterDetectionThreshold=CHANGE_THRESHOLD_PRECENTAGE)
 
-    runDashboard(wc)
+    # runDashboard(wc)
 
     while True:
         if ser.in_waiting > 0:
@@ -60,11 +68,9 @@ def main():
                 if allNum and len(data) == 4:
                     current = [data[0], data[2]]
                     avg = [data[1], data[3]]
-                    # print(avg[0], " ,", current[0])
-                    # WateringControl.moist = current
-
                     wc.waterRequired(current, avg)
                     wc.switchPumps()
+
             except Exception as e:
                 print(traceback.format_exc())
 
@@ -105,22 +111,18 @@ class WateringControl:
         self.wateringTime = wateringTime  # duration (int)
         self.startWaitingTime = []
         self.waitingTime = waitingTime  # int duration
-
-        self.pumps = pumps
+        self.pumps = pumps  # relays of the pumps
         self.waterDetectionThreshold = waterDetectionThreshold  # int 0-100
         self.lastWatering = []  # time (int)
-        self.consecutiveWaterings = []  # count int
-        self.maxConsecutiveWaterings = 4  # count int
-
         self.moisture = []  # int 0-100
         self.avgMoisture = []
-
         self.pumpBlocked = []  # bool if pump seems to be not functioning as it should
+        self.logEntry = []
+        self.logTimer = 0
 
         # For Each pump
-        for i in pumps:
+        for i in range(len(pumps)):
             self.lastWatering.append(0)  # int(dt.datetime.utcnow().timestamp())
-            self.consecutiveWaterings.append(0)
             self.startPumpingTime.append(0)
             self.pumpBlocked.append(False)
             self.moisture.append(0)
@@ -129,107 +131,84 @@ class WateringControl:
             self.wateringState.append(WateringState.IDLE)
             self.startWateringTime.append(0)
             self.startWaitingTime.append(0)
+            self.logEntry.append([])
+            self.pumpOff(i)
         self.pumpBlocked = [False, False]
+
+        # logColumns = ["timestamp", "pump", "currentMoisture","averageMoisture" ,"pumpStates", "pumpBlocked","wateringState"]
 
     def switchPumps(self, chatty=False):
         try:
             if len(self.pumpStates) > 0:
-                self.logEntry += "   ,pumpStates: " + str(self.pumpStates[1]) + "   ,pumpBlocked: " + str(
-                    self.pumpBlocked[1]) + "   ,wateringState: " + str(self.wateringState[1])
-                # print(self.logEntry)
-
                 for i, requiresWater in enumerate(self.pumpStates):
+                    self.logEntry[i] = timestamp(), i, self.moisture[i], self.avgMoisture[i], i, self.pumpStates[i], \
+                                       self.pumpBlocked[i], self.wateringState[i]
 
                     # State Machine
                     if self.wateringState[i] == WateringState.IDLE:
-                        if chatty: print("IDLE")
-                        if requiresWater and self.pumpBlocked[i] != True:
-                            self.wateringState[i] = WateringState.INIT
-
+                        tsBeginn = datetime.datetime.today().replace(hour=WORKING_HOURS[0], minute=0).timestamp()
+                        tsEnd = datetime.datetime.today().replace(hour=WORKING_HOURS[1], minute=0).timestamp()
+                        if tsBeginn < timestamp() < tsEnd:
+                            if requiresWater and self.pumpBlocked[i] != True:
+                                self.wateringState[i] = WateringState.INIT
 
                     elif self.wateringState[i] == WateringState.INIT:
-                        if chatty: print("INIT")
                         self.startPumpingMoisture[i] = max(self.avgMoisture[i], self.moisture[
                             i])  # Nach oben meist recht konsistent, aber vereinelt abbrueche nach unten
                         self.wateringState[i] = WateringState.PRE_WATERING_START
 
-
                     elif self.wateringState[i] == WateringState.PRE_WATERING_START:
-                        if chatty: print("PRE_WATERING_START")
                         self.startPumpingTime[i] = timestamp()
                         self.pumpOn(i)
                         self.wateringState[i] = WateringState.PRE_WATERING_END
 
-
-
                     elif self.wateringState[i] == WateringState.PRE_WATERING_END:
-                        if chatty: print("PRE_WATERING_END")
-
                         if (timestamp() - self.startPumpingTime[i]) < self.maxTimeToReachSensor[i]:
                             if self.moistureChanged(i):  # Water reached Sensor
                                 self.wateringState[i] = WateringState.WATERING_START
-
                         else:
                             self.wateringState[i] = WateringState.ABORTED_START
 
                     elif self.wateringState[i] == WateringState.WATERING_START:
-                        if chatty: print("WATERING_START")
                         self.startWateringTime[i] = timestamp()
                         self.wateringState[i] = WateringState.WATERING_END
 
-
                     elif self.wateringState[i] == WateringState.WATERING_END:
-                        if chatty: print("WATERING_END")
                         if (timestamp() - self.startWateringTime[i]) > self.wateringTime[i]:
                             self.pumpOff(i)
                             self.wateringState[i] = WateringState.FINISHED_START
 
-
                     elif self.wateringState[i] == WateringState.FINISHED_START:
-                        if chatty: print("FINISHED_START")
-
                         self.wateringState[i] = WateringState.FINISHED_END
 
-
                     elif self.wateringState[i] == WateringState.FINISHED_END:
-                        if chatty: print("FINISHED_END")
-
                         self.wateringState[i] = WateringState.WAITING_START
 
-
                     elif self.wateringState[i] == WateringState.WAITING_START:
-                        if chatty: print("WAITING_START")
                         self.startWaitingTime[i] = timestamp()
                         self.wateringState[i] = WateringState.WAITING_END
 
-
                     elif self.wateringState[i] == WateringState.WAITING_END:
-                        if chatty: print("WAITING_END")
                         if (timestamp() - self.startWaitingTime[i]) > self.waitingTime[i]:
                             self.wateringState[i] = WateringState.RESET
 
-
-
                     elif self.wateringState[i] == WateringState.ABORTED_START:
-                        if chatty: print("ABORTED_START")
                         self.pumpOff(i)
                         self.pumpBlocked[i] = True
                         self.startPumpingTime[i] = 0
                         self.startWateringTime[i] = 0
-                        # Notify User
-
                         self.wateringState[i] = WateringState.ABORTED_END
 
 
                     elif self.wateringState[i] == WateringState.ABORTED_END:
-                        if chatty: print("ABORTED_END")
                         self.wateringState[i] = WateringState.RESET
 
-
                     elif self.wateringState[i] == WateringState.RESET:
-                        if chatty: print("RESET")
                         self.wateringState[i] = WateringState.IDLE
 
+                self.logTimer = (self.logTimer + 1) % 50
+                if self.logTimer == 0:
+                    self.logData()
                 time.sleep(0.1)
 
             else:
@@ -240,7 +219,16 @@ class WateringControl:
             # print("GPIO Cleanup, Errormessage: ", e)
             print(traceback.format_exc())
 
-    def waterRequired(self, moisture, avgMoisture, chatty=False):
+    # Create logfile for each day
+    def logData(self):
+        filename = "/home/daniel/Desktop/Plants/log/datalog_" + str(date.today()) + ".csv"
+        with open(filename, 'a') as f:
+            w = csv.writer(f)
+            for entry in self.logEntry:
+                w.writerow(entry)
+                entry = []
+
+    def waterRequired(self, moisture, avgMoisture):
         self.pumpStates = []
         self.moisture = []
         self.avgMoisture = []
@@ -253,19 +241,8 @@ class WateringControl:
 
             if self.requiresWaterThreshold < self.avgMoisture[sensor]:
                 self.pumpStates.append(False)
-
-                if chatty: print(sensor, ": ", self.moisture[sensor], "% , WET")
-
             else:
-                if chatty: print(sensor, ": ", self.moisture[sensor], "% , DRY")
                 self.pumpStates.append(True)  # Needs water
-
-        if chatty:
-            # print(self.pumpStates)
-            print("\n")
-
-        self.logEntry = str(timestamp()) + "   ,Moisture(current/Average): " + str(self.moisture[0]) + "/" + str(
-            self.avgMoisture[0])
 
         return self.pumpStates
 
@@ -368,17 +345,19 @@ def runDashboard(wc):
     def update_s1(n):
         val = "67"
         style = {'padding': '5px', 'fontSize': '16px'}
-        return html.H1(f"Sensor 1 Moisture: {val}")
+        return html.H1("Sensor 1 Moisture: ", val)
 
     @app.callback(Output('s2Display', 'children'),
                   Input('ivS2', 'n_intervals'))
     def update_s2(n):
         val = "23"
         style = {'padding': '5px', 'fontSize': '16px'}
-        return html.H1(f"Sensor 2 Moisture: {val}")
+        return html.H1("Sensor 2 Moisture: ", val)
 
     app.run(debug=True)
 
 
 if __name__ == "__main__":
     main()
+
+
