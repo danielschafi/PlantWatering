@@ -21,7 +21,6 @@ from enum import Enum
 import sys
 import traceback
 import RPi.GPIO as GPIO
-from observable import Observable
 import csv
 
 WATERING_THRESHOLD = 40  # Threshold for pump activation
