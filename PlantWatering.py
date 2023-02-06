@@ -23,14 +23,17 @@ import traceback
 import RPi.GPIO as GPIO
 import csv
 
-WATERING_THRESHOLD = 40  # Threshold for pump activation
-RELAY_CHANNELS = [26, 20]  # ,21 Nr 3 unused
-WAITING_TIME = [180, 180]
-WATERING_TIME = [2, 2]  #
-CHANGE_THRESHOLD_PRECENTAGE = 6
-current = [1, 1]
-WORKING_HOURS = [9, 17]  # start,end
+WATERING_THRESHOLDS = [40,40]      # Threshold for pump activation
+RELAY_CHANNELS = [26, 20]          # ,21 Nr 3 unused
+WAITING_TIME = [180, 180]          # min break time in s between waterings, recommended to leave like this
+WATERING_TIME = [2, 2]             # Time in s for wateringduration, after water reached the sensor
+CHANGE_THRESHOLD_PERCENTAGE = 6    # if this threshold is crossed, the moisture counts as changed (water reached sensor)
+WORKING_HOURS = [9, 17]            # start,end
 
+
+LOG_DICT = "/home/user/Desktop/Plants/log/"  # Destination for LogFiles
+
+current = [1, 1]
 
 def main():
     # Setup
@@ -48,10 +51,10 @@ def main():
     print("Setup Serial Connection is [success]")
 
     wc = WateringControl(pumps=RELAY_CHANNELS,
-                         requiresWaterThreshold=WATERING_THRESHOLD,
+                         requiresWaterThreshold=WATERING_THRESHOLDS,
                          waitingTime=WAITING_TIME,
                          wateringTime=WATERING_TIME,
-                         waterDetectionThreshold=CHANGE_THRESHOLD_PRECENTAGE)
+                         waterDetectionThreshold=CHANGE_THRESHOLD_PERCENTAGE)
 
     # runDashboard(wc)
 
@@ -98,7 +101,7 @@ class WateringState(Enum):
 class WateringControl:
     moist = [0, 0]
 
-    def __init__(self, pumps, requiresWaterThreshold=40, waitingTime=[180, 180], wateringTime=[2, 2],
+    def __init__(self, pumps, requiresWaterThreshold=[40,40], waitingTime=[180, 180], wateringTime=[2, 2],
                  waterDetectionThreshold=10, maxTimeToReachSensor=[15, 15]):
         self.requiresWaterThreshold = requiresWaterThreshold
         self.pumpStates = []  # Pumps on/off
@@ -220,7 +223,7 @@ class WateringControl:
 
     # Create logfile for each day
     def logData(self):
-        filename = "/home/daniel/Desktop/Plants/log/datalog_" + str(date.today()) + ".csv"
+        filename = LOG_DICT + "datalog_" + str(date.today()) + ".csv"
         with open(filename, 'a') as f:
             w = csv.writer(f)
             for entry in self.logEntry:
@@ -238,7 +241,7 @@ class WateringControl:
             WateringControl.moist.append(moisture[sensor])
             self.avgMoisture.append(int(avgMoisture[sensor]))
 
-            if self.requiresWaterThreshold < self.avgMoisture[sensor]:
+            if self.requiresWaterThreshold[sensor] < self.avgMoisture[sensor]:
                 self.pumpStates.append(False)
             else:
                 self.pumpStates.append(True)  # Needs water
